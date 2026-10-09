@@ -6133,7 +6133,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 [[package]]
 name = "tap-query"
 version = "0.1.0"
-source = "git+https://github.com/nightswatchhq/tap-query?branch=main#8c5c097f6ab41043b1827dc3d459234c9e2f6977"
+source = "git+https://github.com/nuthatch-org/tap-query?branch=main#8c5c097f6ab41043b1827dc3d459234c9e2f6977"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

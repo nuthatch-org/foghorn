@@ -5,7 +5,7 @@
 //! means no `collection_id` to bill, which means direct probing stops. An oracle whose independence
 //! rests on someone else's API key is not independent, and GRC-009 claims otherwise on our behalf.
 //!
-//! Everything that path provided is on Arbitrum as events, and `nightswatchhq/horizon-nest` indexes
+//! Everything that path provided is on Arbitrum as events, and `nuthatch-org/horizon-nest` indexes
 //! them: `AllocationCreated/Resized/Closed` on the SubgraphService for the allocation set, and
 //! `ServiceProviderRegistered` for the endpoints.
 //!
