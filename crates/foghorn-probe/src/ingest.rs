@@ -261,6 +261,9 @@ pub async fn run_ingest_once(client: &LodestarClient, pool: &PgPool) -> Result<(
         }
         i += QOS_CONCURRENCY;
     }
+    if qos_count == 0 && !observed.is_empty() {
+        anyhow::bail!("QoS fetched for none of {} indexers", observed.len());
+    }
 
     Ok((roster.len(), qos_count))
 }
