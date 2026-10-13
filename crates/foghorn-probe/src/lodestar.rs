@@ -15,39 +15,53 @@ pub struct LodestarClient {
 }
 
 /// One indexer from `/api/indexers-enriched`. Only the fields Foghorn consumes.
+///
+/// Aliases cover both the Vercel-era names and kittiwake's, which also sends GRT figures as strings.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct EnrichedIndexer {
+    #[serde(alias = "address")]
     pub id: String,
     #[serde(rename = "ensName")]
     pub ens_name: Option<String>,
     pub url: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: Option<i64>,
-    #[serde(rename = "selfStakeGRT")]
+    #[serde(rename = "selfStakeGRT", alias = "selfStakeGrt", deserialize_with = "num")]
     pub self_stake_grt: Option<f64>,
-    #[serde(rename = "delegatedGRT")]
+    #[serde(rename = "delegatedGRT", alias = "delegatedGrt", deserialize_with = "num")]
     pub delegated_grt: Option<f64>,
     #[serde(rename = "allocationCount")]
     pub allocation_count: Option<i32>,
-    #[serde(rename = "queryFeesCollectedGRT")]
+    #[serde(rename = "queryFeesCollectedGRT", alias = "queryFeesCollectedGrt", deserialize_with = "num")]
     pub query_fees_collected_grt: Option<f64>,
     #[serde(rename = "reoStatus")]
     pub reo_status: Option<String>,
     #[serde(rename = "reoSource")]
     pub reo_source: Option<String>,
+    #[serde(deserialize_with = "num")]
     pub score: Option<f64>,
     #[serde(rename = "scoreGrade")]
     pub score_grade: Option<String>,
 }
 
+fn num<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.trim().parse().ok(),
+        _ => None,
+    })
+}
+
+/// `{ indexers }` on Vercel, `{ data }` on kittiwake. Neither key defaults: an envelope we do not
+/// recognise must fail the cycle, not ingest an empty roster and freeze every profile.
 #[derive(Debug, Deserialize)]
 struct EnrichedResponse {
-    #[serde(default)]
+    #[serde(alias = "data")]
     indexers: Vec<EnrichedIndexer>,
 }
 
-/// One daily QoS data point from `/api/indexer-qos/{address}`.
+/// One daily QoS data point from `/api/indexer/{address}/qos`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct QosPoint {
@@ -120,12 +134,19 @@ impl LodestarClient {
             return Err(anyhow!("enriched: HTTP {}", resp.status()));
         }
         let parsed: EnrichedResponse = resp.json().await?;
+        if parsed.indexers.iter().all(|ix| ix.id.is_empty()) {
+            return Err(anyhow!("enriched: no indexer carries an address, the schema has moved"));
+        }
         Ok(parsed.indexers)
     }
 
     /// Fetch QoS for one indexer and aggregate over the trailing `window_days`.
     pub async fn fetch_qos(&self, address: &str, window_days: usize) -> Result<QosAggregate> {
-        let url = format!("{}/api/indexer-qos/{}", self.base_url, address.to_lowercase());
+        let url = format!(
+            "{}/api/indexer/{}/qos?days={window_days}",
+            self.base_url,
+            address.to_lowercase()
+        );
         let resp = self.req(&url).send().await?;
         if !resp.status().is_success() {
             return Err(anyhow!("qos: HTTP {}", resp.status()));
@@ -183,6 +204,30 @@ mod tests {
         assert_eq!(agg.query_count, 1000);
         // query-weighted success: (50*100 + 100*900)/1000 = 95
         assert!((agg.success_rate.unwrap() - 95.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn enriched_reads_kittiwake_rows() {
+        let body = r#"{"data":[{"address":"0x38f4","ensName":"graphops.eth","selfStakeGrt":"11087938.46",
+            "delegatedGrt":"1284594.3","allocationCount":663,"queryFeesCollectedGrt":"72129.4",
+            "score":"88","scoreGrade":"A","reoStatus":"eligible"}],"provenance":{}}"#;
+        let ix = &serde_json::from_str::<EnrichedResponse>(body).unwrap().indexers[0];
+        assert_eq!(ix.id, "0x38f4");
+        assert_eq!(ix.allocation_count, Some(663));
+        assert_eq!(ix.self_stake_grt, Some(11087938.46));
+        assert_eq!(ix.score, Some(88.0));
+    }
+
+    #[test]
+    fn enriched_still_reads_the_vercel_rows() {
+        let body = r#"{"indexers":[{"id":"0x1","selfStakeGRT":5.5,"allocationCount":3,"score":70}]}"#;
+        let ix = &serde_json::from_str::<EnrichedResponse>(body).unwrap().indexers[0];
+        assert_eq!((ix.id.as_str(), ix.self_stake_grt, ix.score), ("0x1", Some(5.5), Some(70.0)));
+    }
+
+    #[test]
+    fn unknown_envelope_is_an_error_not_an_empty_roster() {
+        assert!(serde_json::from_str::<EnrichedResponse>(r#"{"rows":[]}"#).is_err());
     }
 
     #[test]
