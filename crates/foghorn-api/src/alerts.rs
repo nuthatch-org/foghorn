@@ -2,6 +2,7 @@
 //! binary's `subscriptions` loop evaluates and delivers.
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
@@ -184,6 +185,20 @@ pub async fn get(
     describe(&state.pool, id, &q.token).await.map(Json)
 }
 
+/// `POST /v1/alerts/subscriptions/:id/read` with `{"token": "..."}`. The same answer as the GET,
+/// with the token kept out of the URL. A body that is missing, malformed or has no token reads as
+/// an empty token, which is what the GET does for a missing one.
+pub async fn read(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    body: Bytes,
+) -> Result<Json<Value>, Refusal> {
+    let token = serde_json::from_slice::<TokenBody>(&body)
+        .map(|b| b.token)
+        .unwrap_or_default();
+    describe(&state.pool, id, &token).await.map(Json)
+}
+
 pub async fn describe(pool: &PgPool, id: Uuid, token: &str) -> Result<Value, Refusal> {
     let row = sqlx::query(
         "SELECT indexer_address, webhook_url, kinds, signal_move_pct, created_at, last_evaluated_at, last_delivered_at, \
@@ -306,6 +321,105 @@ mod tests {
             describe(&db.pool, id, &token).await.unwrap_err().0,
             StatusCode::NOT_FOUND
         );
+        db.drop_database().await;
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Captured;
+        fn make_writer(&'a self) -> Captured {
+            self.clone()
+        }
+    }
+
+    async fn call(
+        app: &axum::Router,
+        req: axum::http::Request<axum::body::Body>,
+    ) -> (StatusCode, Vec<u8>) {
+        use tower::ServiceExt;
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
+    }
+
+    fn get_req(id: &str, query: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::get(format!("/v1/alerts/subscriptions/{id}{query}"))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    fn post_req(id: &str, body: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::post(format!("/v1/alerts/subscriptions/{id}/read"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_post_read_answers_as_the_get_does_and_logs_no_token() {
+        let Some(db) = TestDb::create().await else {
+            return;
+        };
+        let logs = Captured::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(logs.clone())
+                .finish(),
+        );
+        let app = crate::app(AppState {
+            schema: crate::graphql::schema(db.pool.clone()),
+            probe_interval_secs: 3600,
+            pool: db.pool.clone(),
+        });
+        let v = validate(req(INDEXER, HOOK)).unwrap();
+        let (id, token) = insert(&db.pool, &v).await.unwrap();
+        let id = id.to_string();
+        let unknown = Uuid::new_v4().to_string();
+        let wrong = "a-wrong-token-that-must-not-be-logged";
+
+        let (get_status, get_body) = call(&app, get_req(&id, &format!("?token={token}"))).await;
+        assert_eq!(get_status, StatusCode::OK);
+        let (status, body) = call(&app, post_req(&id, &format!(r#"{{"token":"{token}"}}"#))).await;
+        assert_eq!((status, &body), (get_status, &get_body));
+
+        let pairs = [
+            (
+                get_req(&id, &format!("?token={wrong}")),
+                post_req(&id, &format!(r#"{{"token":"{wrong}"}}"#)),
+            ),
+            (get_req(&id, ""), post_req(&id, "{}")),
+            (get_req(&id, ""), post_req(&id, "{not json")),
+            (get_req(&id, ""), post_req(&id, "")),
+            (
+                get_req(&unknown, &format!("?token={token}")),
+                post_req(&unknown, &format!(r#"{{"token":"{token}"}}"#)),
+            ),
+        ];
+        for (get, post) in pairs {
+            let (want_status, want_body) = call(&app, get).await;
+            assert_eq!(want_status, StatusCode::NOT_FOUND);
+            assert_eq!(call(&app, post).await, (want_status, want_body));
+        }
+
+        let captured = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(!captured.contains(&token), "token logged: {captured}");
+        assert!(!captured.contains(wrong), "token logged: {captured}");
         db.drop_database().await;
     }
 
