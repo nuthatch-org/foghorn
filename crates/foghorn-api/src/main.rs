@@ -48,12 +48,23 @@ async fn main() -> anyhow::Result<()> {
         pool,
     };
 
+    let app = app(state);
+
+    let addr = format!("{}:{}", config.api_host, config.api_port);
+    info!("Listening on {}", addr);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn app(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    Router::new()
         .route("/v1/health", get(routes::health))
         .route("/v1/stats", get(routes::stats))
         .route("/v1/feed", get(routes::feed))
@@ -87,14 +98,8 @@ async fn main() -> anyhow::Result<()> {
         // ── Alert subscriptions (lodestar#256) ──
         .route("/v1/alerts/subscriptions", post(alerts::create))
         .route("/v1/alerts/subscriptions/:id", get(alerts::get))
+        .route("/v1/alerts/subscriptions/:id/read", post(alerts::read))
         .route("/v1/alerts/subscriptions/:id/delete", post(alerts::delete))
         .layer(cors)
-        .with_state(state);
-
-    let addr = format!("{}:{}", config.api_host, config.api_port);
-    info!("Listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+        .with_state(state)
 }

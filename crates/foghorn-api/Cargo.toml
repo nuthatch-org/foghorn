@@ -25,4 +25,5 @@ chrono = { workspace = true }
 async-graphql = { workspace = true }
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 foghorn-core = { path = "../foghorn-core", features = ["test-db"] }
