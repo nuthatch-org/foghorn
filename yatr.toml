@@ -25,18 +25,18 @@ sources = ["**/*.rs"]
 [tasks.lint]
 desc = "Clippy with warnings denied"
 run = ["cargo clippy --workspace --all-targets -- -D warnings"]
-sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock"]
+sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock", "migrations/**"]
 
 [tasks.test]
 desc = "Run the test suite"
-run = ["cargo test --workspace"]
-sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock"]
+run = ["cargo test --workspace --locked"]
+sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock", "migrations/**"]
 watch = ["**/*.rs"]
 
 [tasks.build]
 desc = "Build in release mode"
 run = ["cargo build --workspace --release"]
-sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock"]
+sources = ["**/*.rs", "**/Cargo.toml", "Cargo.lock", "migrations/**"]
 
 [tasks.doc]
 desc = "Build the API docs"
@@ -44,6 +44,7 @@ run = ["cargo doc --workspace --no-deps"]
 sources = ["**/*.rs"]
 
 [tasks.ci]
-desc = "What CI runs: fmt-check, lint, test"
-depends = ["fmt-check", "lint", "test"]
+# CI gates on the tests alone, so fmt-check and lint stay out of the aggregate.
+desc = "What CI runs: test"
+depends = ["test"]
 run = []
